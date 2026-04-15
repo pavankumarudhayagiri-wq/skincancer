@@ -27,11 +27,11 @@ The application is deployed and accessible at: [Melanoma Detection App · Stream
 ## Installation
 1. Clone the repository:
    ```bash
-   git clone https://github.com/DeborahAdedigba/Melanoma-Detection.git
+   git clone https://github.com/pavankumarudhayagiri-wq/skincancer.git
    ```
 2. Navigate to the project directory:
    ```bash
-   cd Melanoma-Detection
+   cd skincancer
    ```
 3. Install the required dependencies:
    ```bash
@@ -39,8 +39,26 @@ The application is deployed and accessible at: [Melanoma Detection App · Stream
    ```
 4. Run the Streamlit app:
    ```bash
-   streamlit run Melanoma_Detection.py
+   streamlit run app.py
    ```
+
+## Deployment (GitHub + Streamlit Community Cloud)
+1. Push your latest `main` branch to GitHub.
+2. In Streamlit Community Cloud, click **New app** and select this repository.
+3. Set **Main file path** to:
+   ```text
+   app.py
+   ```
+4. Deploy.
+
+### Important Notes for Large Model Files
+- This repository uses **Git LFS** for `.h5`, `.keras`, and `.db` files.
+- If a deployment environment does not fetch LFS blobs, run:
+  ```bash
+  python download_weights.py
+  ```
+  to fetch expected weight files into the app directory.
+- The app can still start and will show missing-model warnings if model files are not present.
 
 ## Usage
 Navigate through the app using the sidebar menu:

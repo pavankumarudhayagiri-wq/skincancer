@@ -21,7 +21,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-REPO_URL = "https://github.com/DeborahAdedigba/Melanoma-Detection_App.git"
+REPO_URL = "https://github.com/pavankumarudhayagiri-wq/skincancer.git"
 TARGET_DIR = Path(__file__).resolve().parent
 
 # Copy every weight artifact we expect (same names as melanoma_ml.py)
