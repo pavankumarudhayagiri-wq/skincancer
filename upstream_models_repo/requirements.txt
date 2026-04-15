@@ -1,0 +1,12 @@
+streamlit
+numpy
+tensorflow
+matplotlib
+pandas
+seaborn
+plotly
+pyyaml
+pillow
+scikit-learn
+gdown
+tensorflow-cpu>=2.10.0
