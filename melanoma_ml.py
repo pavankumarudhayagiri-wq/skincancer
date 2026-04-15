@@ -9,35 +9,16 @@ try:
     import pytesseract
 except ImportError:
     pytesseract = None
-from tensorflow.keras.models import load_model
-from tensorflow.keras.preprocessing import image
-from tensorflow.keras.applications.vgg16 import preprocess_input as preprocess_vgg16
-from tensorflow.keras.applications.resnet50 import preprocess_input as preprocess_resnet50
-from tensorflow.keras.applications.efficientnet import preprocess_input as preprocess_efficientnet
-from tensorflow.keras.applications.inception_resnet_v2 import preprocess_input as preprocess_inceptionresnetv2
-from tensorflow.keras.applications.mobilenet_v2 import (
-    MobileNetV2,
-    preprocess_input as preprocess_mobilenet_v2,
-    decode_predictions,
-)
 import matplotlib.pyplot as plt
 from io import StringIO, BytesIO
-import tensorflow as tf
-from tensorflow.keras.models import Model
-from tensorflow.keras.layers import Input, Conv2D, MaxPooling2D, Dropout, Flatten, Dense, BatchNormalization
-from tensorflow.keras.regularizers import l2
-from tensorflow.keras.layers import Dense, Dropout, GlobalAveragePooling2D, concatenate
-from tensorflow.keras.applications import VGG16, ResNet50, InceptionResNetV2, EfficientNetB4
 import pandas as pd
 import seaborn as sns
 import plotly.express as px
 import plotly.graph_objects as go
-from tensorflow.keras.preprocessing import image
 import logging
 from typing import Dict, Tuple
 import yaml
 from PIL import Image, ImageDraw
-from scipy import ndimage
 from sklearn.metrics import roc_curve, auc
 from sklearn.preprocessing import label_binarize
 import logging
@@ -51,6 +32,39 @@ import sqlite3
 import hashlib
 import re
 import secrets
+
+try:
+    import tensorflow as tf
+    from tensorflow.keras.models import Model, load_model
+    from tensorflow.keras.layers import (
+        Input,
+        Conv2D,
+        MaxPooling2D,
+        Dropout,
+        Flatten,
+        Dense,
+        BatchNormalization,
+        GlobalAveragePooling2D,
+        concatenate,
+    )
+    from tensorflow.keras.regularizers import l2
+    from tensorflow.keras.applications import VGG16, ResNet50, InceptionResNetV2, EfficientNetB4
+    from tensorflow.keras.applications.vgg16 import preprocess_input as preprocess_vgg16
+    from tensorflow.keras.applications.resnet50 import preprocess_input as preprocess_resnet50
+    from tensorflow.keras.applications.efficientnet import preprocess_input as preprocess_efficientnet
+    from tensorflow.keras.applications.inception_resnet_v2 import preprocess_input as preprocess_inceptionresnetv2
+    from tensorflow.keras.applications.mobilenet_v2 import (
+        MobileNetV2,
+        preprocess_input as preprocess_mobilenet_v2,
+        decode_predictions,
+    )
+    TF_AVAILABLE = True
+    TF_IMPORT_ERROR = None
+except Exception as e:
+    tf = None
+    Model = None
+    TF_AVAILABLE = False
+    TF_IMPORT_ERROR = e
 
 MODEL_DIR = Path(__file__).resolve().parent
 AUTH_DB_PATH = MODEL_DIR / "users.db"
@@ -76,8 +90,9 @@ SKIN_WEIGHT_FILENAMES = {
 }
 ALL_REQUIRED_MODEL_FILES = tuple(DERM_MODEL_FILENAMES.values()) + tuple(SKIN_WEIGHT_FILENAMES.values())
 
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
-logging.getLogger('tensorflow').setLevel(logging.ERROR)
+if TF_AVAILABLE:
+    os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
+    logging.getLogger('tensorflow').setLevel(logging.ERROR)
 
 if pytesseract is not None:
     for candidate in TESSERACT_CANDIDATE_PATHS:
@@ -91,10 +106,11 @@ if pytesseract is not None:
         os.environ.setdefault("TESSDATA_PREFIX", str(tessdata_dir))
 
 # Disable GPU on machines where TensorFlow sees a GPU; ignore errors on CPU-only installs
-try:
-    tf.config.set_visible_devices([], 'GPU')
-except Exception:
-    pass
+if TF_AVAILABLE:
+    try:
+        tf.config.set_visible_devices([], 'GPU')
+    except Exception:
+        pass
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -535,6 +551,25 @@ def _model_path(filename: str) -> Path:
 
 @st.cache_resource(show_spinner="Loading melanoma detection models...")
 def load_models():
+    if not TF_AVAILABLE:
+        logging.warning("TensorFlow is unavailable: %s", TF_IMPORT_ERROR)
+        return {
+            'derm': {
+                'CNN': None,
+                'VGG16': None,
+                'ResNet50': None,
+                'EfficientNetB4': None,
+                'InceptionResNetV2': None
+            },
+            'skin': {
+                'CNN': None,
+                'VGG16': None,
+                'ResNet50': None,
+                'EfficientNetB4': None,
+                'InceptionResNetV2': None
+            }
+        }, None, None, None, None, None
+
     # Add this to prevent TensorFlow from allocating all memory
     gpus = tf.config.list_physical_devices('GPU')
     if gpus:
@@ -624,7 +659,9 @@ def load_models():
 @st.cache_resource
 def load_validation_models():
     """Load models used for image validation."""
-    base_model = MobileNetV2(weights="imagenet", include_top=True)
+    base_model = None
+    if TF_AVAILABLE:
+        base_model = MobileNetV2(weights="imagenet", include_top=True)
     face_cascade = None
     if cv2 is not None:
         face_cascade = cv2.CascadeClassifier(
@@ -944,7 +981,7 @@ def safe_model_predict(model, model_input: np.ndarray):
         return model.predict(x, verbose=0)
     except OSError as e:
         # Retry once via tensor path when NumPy input triggers Invalid argument on some setups.
-        if getattr(e, "errno", None) == 22:
+        if getattr(e, "errno", None) == 22 and TF_AVAILABLE:
             x_tensor = tf.convert_to_tensor(x, dtype=tf.float32)
             return model.predict(x_tensor, verbose=0)
         raise
@@ -954,6 +991,8 @@ def classify_image_content(img_array, model):
     """
     Use ImageNet model to classify image content.
     """
+    if model is None or not TF_AVAILABLE:
+        return {"is_medical": False, "is_document": False, "is_person": False, "top_predictions": []}
     try:
         img = img_array[0] if img_array.shape[0] == 1 else img_array
         if cv2 is not None:
@@ -1186,6 +1225,19 @@ def display_validation_result_robust(is_valid, summary, reasons, metrics):
 # Detecting Melanoma
 def melanoma_detection():
     st.title('Melanoma Detection')
+    if not TF_AVAILABLE:
+        st.error(
+            "TensorFlow is not available in this deployment environment, so melanoma "
+            "prediction models cannot run right now."
+        )
+        st.info(
+            "The app is running in compatibility mode on Python 3.14. "
+            "To enable predictions, deploy with Python 3.11 and install TensorFlow."
+        )
+        if TF_IMPORT_ERROR is not None:
+            st.caption(f"TensorFlow import details: {TF_IMPORT_ERROR}")
+        return
+
     validation_models = load_validation_models()
     ocr_ready, ocr_msg = get_ocr_status()
     st.sidebar.markdown("### OCR Status")
@@ -1694,6 +1746,16 @@ def plot_roc_curve(model, model_name, num_classes, input_size):
     return fig
 
 def model_performance_page():
+    if not TF_AVAILABLE:
+        st.title("Model Performance")
+        st.warning(
+            "Model architecture/performance pages require TensorFlow, which is unavailable "
+            "in this deployment environment."
+        )
+        if TF_IMPORT_ERROR is not None:
+            st.caption(f"TensorFlow import details: {TF_IMPORT_ERROR}")
+        return
+
     if 'models' not in st.session_state:
         loaded_data = load_models()
         st.session_state.models = loaded_data[0] if isinstance(loaded_data, tuple) else loaded_data
