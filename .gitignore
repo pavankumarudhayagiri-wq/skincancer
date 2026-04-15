@@ -2,26 +2,11 @@ __pycache__/
 *.py[cod]
 *.pyo
 .Python
-.venv/
-venv/
-ENV/
-env/
 .ipynb_checkpoints/
 .DS_Store
 
 # Streamlit
 .streamlit/secrets.toml
-
-# Local databases / artifacts
-*.db
-
-# ML weights/models (too large for GitHub)
-*.h5
-*.keras
-*.ckpt
-*.pt
-*.pth
-*.onnx
 
 # Data dumps (keep small CSVs if needed)
 data/
