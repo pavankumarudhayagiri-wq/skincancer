@@ -1,0 +1,14 @@
+streamlit
+numpy
+matplotlib
+pandas
+seaborn
+plotly
+pyyaml
+pillow
+scikit-learn
+gdown
+tensorflow-cpu>=2.10.0
+opencv-python>=4.8.0
+pytesseract>=0.3.10
+scipy>=1.9.0
