@@ -1,0 +1,7 @@
+.venv/
+__pycache__/
+.ipynb_checkpoints/
+.streamlit/secrets.toml
+.git_backup/
+users.db
+upstream_models_repo/
