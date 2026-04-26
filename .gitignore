@@ -5,3 +5,6 @@ __pycache__/
 .git_backup/
 users.db
 upstream_models_repo/
+*.keras
+*.h5
+*.weights.h5
