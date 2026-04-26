@@ -9,30 +9,12 @@ try:
     import pytesseract
 except ImportError:
     pytesseract = None
-from tensorflow.keras.models import load_model
-from tensorflow.keras.preprocessing import image
-from tensorflow.keras.applications.vgg16 import preprocess_input as preprocess_vgg16
-from tensorflow.keras.applications.resnet50 import preprocess_input as preprocess_resnet50
-from tensorflow.keras.applications.efficientnet import preprocess_input as preprocess_efficientnet
-from tensorflow.keras.applications.inception_resnet_v2 import preprocess_input as preprocess_inceptionresnetv2
-from tensorflow.keras.applications.mobilenet_v2 import (
-    MobileNetV2,
-    preprocess_input as preprocess_mobilenet_v2,
-    decode_predictions,
-)
 import matplotlib.pyplot as plt
 from io import StringIO, BytesIO
-import tensorflow as tf
-from tensorflow.keras.models import Model
-from tensorflow.keras.layers import Input, Conv2D, MaxPooling2D, Dropout, Flatten, Dense, BatchNormalization
-from tensorflow.keras.regularizers import l2
-from tensorflow.keras.layers import Dense, Dropout, GlobalAveragePooling2D, concatenate
-from tensorflow.keras.applications import VGG16, ResNet50, InceptionResNetV2, EfficientNetB4
 import pandas as pd
 import seaborn as sns
 import plotly.express as px
 import plotly.graph_objects as go
-from tensorflow.keras.preprocessing import image
 import logging
 from typing import Dict, Tuple
 import yaml
@@ -54,6 +36,47 @@ import secrets
 from urllib.error import URLError, HTTPError
 from urllib.parse import quote
 from urllib.request import urlopen
+
+TF_IMPORT_ERROR = None
+try:
+    import tensorflow as tf
+    from tensorflow.keras.models import load_model, Model
+    from tensorflow.keras.preprocessing import image
+    from tensorflow.keras.layers import Input, Conv2D, MaxPooling2D, Dropout, Flatten, Dense, BatchNormalization
+    from tensorflow.keras.regularizers import l2
+    from tensorflow.keras.layers import GlobalAveragePooling2D, concatenate
+    from tensorflow.keras.applications import VGG16, ResNet50, InceptionResNetV2, EfficientNetB4
+    from tensorflow.keras.applications.vgg16 import preprocess_input as preprocess_vgg16
+    from tensorflow.keras.applications.resnet50 import preprocess_input as preprocess_resnet50
+    from tensorflow.keras.applications.efficientnet import preprocess_input as preprocess_efficientnet
+    from tensorflow.keras.applications.inception_resnet_v2 import preprocess_input as preprocess_inceptionresnetv2
+    from tensorflow.keras.applications.mobilenet_v2 import (
+        MobileNetV2,
+        preprocess_input as preprocess_mobilenet_v2,
+        decode_predictions,
+    )
+    TF_AVAILABLE = True
+except Exception as exc:
+    TF_IMPORT_ERROR = f"{type(exc).__name__}: {exc}"
+    TF_AVAILABLE = False
+
+    def _tensorflow_unavailable(*args, **kwargs):
+        raise RuntimeError(
+            "TensorFlow is unavailable in this environment. "
+            "Use Python 3.11 and reinstall dependencies."
+        )
+
+    tf = None
+    load_model = _tensorflow_unavailable
+    image = None
+    Model = object
+    Input = Conv2D = MaxPooling2D = Dropout = Flatten = Dense = BatchNormalization = _tensorflow_unavailable
+    l2 = _tensorflow_unavailable
+    GlobalAveragePooling2D = concatenate = _tensorflow_unavailable
+    VGG16 = ResNet50 = InceptionResNetV2 = EfficientNetB4 = _tensorflow_unavailable
+    MobileNetV2 = _tensorflow_unavailable
+    preprocess_vgg16 = preprocess_resnet50 = preprocess_efficientnet = preprocess_inceptionresnetv2 = _tensorflow_unavailable
+    preprocess_mobilenet_v2 = decode_predictions = _tensorflow_unavailable
 
 MODEL_DIR = Path(__file__).resolve().parent
 AUTH_DB_PATH = MODEL_DIR / "users.db"
@@ -90,6 +113,18 @@ MODEL_URL_ENV_MAP = {
     "best_EfficientNetB4_weights.weights.h5": "MODEL_URL_SKIN_EFFICIENTNETB4",
     "best_InceptionResNetV2_weights.weights.h5": "MODEL_URL_SKIN_INCEPTIONRESNETV2",
 }
+DEFAULT_MODEL_URLS = {
+    "MODEL_URL_DM_CNN": "https://drive.google.com/file/d/1JuqOdzTA_Ob9Mz_1bbR04aGvdMUruDU4/view?usp=sharing",
+    "MODEL_URL_DM_VGG16": "https://drive.google.com/file/d/14Vq10VoVV_CL56DQGgV8moFLLCyioXbm/view?usp=sharing",
+    "MODEL_URL_DM_RESNET50": "https://drive.google.com/file/d/1y1PPSuoyHiqoUZ0krOZCiblIDXkkJUh2/view?usp=sharing",
+    "MODEL_URL_DM_EFFICIENTNETB4": "https://drive.google.com/file/d/16oU9vOF12zp5Nwl690c37WYJNrD7YtPl/view?usp=sharing",
+    "MODEL_URL_DM_INCEPTIONRESNETV2": "https://drive.google.com/file/d/1swv0UiZgD9hiBg1h0Qj5DTshMsO7Evuq/view?usp=sharing",
+    "MODEL_URL_SKIN_CNN": "https://drive.google.com/file/d/1ygf6vmlONdGq3dRlRE3SzwJm5J0rPw26/view?usp=sharing",
+    "MODEL_URL_SKIN_VGG16": "https://drive.google.com/file/d/1k51aj3lI2MP7D8opn_bX6XjGnatVfSUd/view?usp=sharing",
+    "MODEL_URL_SKIN_RESNET50": "https://drive.google.com/file/d/1XfP5C0XxmtpzrryScYZiRt7aXgGrmoRr/view?usp=sharing",
+    "MODEL_URL_SKIN_EFFICIENTNETB4": "https://drive.google.com/file/d/1xN4wND-0e4dzP-P8l-ANcNs9US5-Te0F/view?usp=sharing",
+    "MODEL_URL_SKIN_INCEPTIONRESNETV2": "https://drive.google.com/file/d/1GCXMRil1vBvptsR7MTvCS4liDpS5c0sx/view?usp=sharing",
+}
 
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 logging.getLogger('tensorflow').setLevel(logging.ERROR)
@@ -106,10 +141,11 @@ if pytesseract is not None:
         os.environ.setdefault("TESSDATA_PREFIX", str(tessdata_dir))
 
 # Disable GPU on machines where TensorFlow sees a GPU; ignore errors on CPU-only installs
-try:
-    tf.config.set_visible_devices([], 'GPU')
-except Exception:
-    pass
+if TF_AVAILABLE:
+    try:
+        tf.config.set_visible_devices([], 'GPU')
+    except Exception:
+        pass
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -571,7 +607,21 @@ def _resolve_model_download_url(filename: str) -> str | None:
         direct_value = os.environ.get(direct_key, "").strip()
         if direct_value:
             return direct_value
+        try:
+            secret_value = str(st.secrets.get(direct_key, "")).strip()
+            if secret_value:
+                return secret_value
+        except Exception:
+            pass
+        fallback_value = DEFAULT_MODEL_URLS.get(direct_key, "").strip()
+        if fallback_value:
+            return fallback_value
     base_url = os.environ.get("MODEL_ASSET_BASE_URL", "").strip().rstrip("/")
+    if not base_url:
+        try:
+            base_url = str(st.secrets.get("MODEL_ASSET_BASE_URL", "")).strip().rstrip("/")
+        except Exception:
+            base_url = ""
     if not base_url:
         return None
     return f"{base_url}/{quote(filename)}"
@@ -617,6 +667,26 @@ def ensure_model_artifacts() -> tuple[list[str], dict[str, str]]:
 
 @st.cache_resource(show_spinner="Loading melanoma detection models...")
 def load_models():
+    if not TF_AVAILABLE:
+        logging.error("TensorFlow unavailable: %s", TF_IMPORT_ERROR)
+        empty = {
+            'derm': {
+                'CNN': None,
+                'VGG16': None,
+                'ResNet50': None,
+                'EfficientNetB4': None,
+                'InceptionResNetV2': None,
+            },
+            'skin': {
+                'CNN': None,
+                'VGG16': None,
+                'ResNet50': None,
+                'EfficientNetB4': None,
+                'InceptionResNetV2': None,
+            },
+        }
+        return empty, None, None, None, None, None
+
     # Add this to prevent TensorFlow from allocating all memory
     gpus = tf.config.list_physical_devices('GPU')
     if gpus:
@@ -706,6 +776,9 @@ def load_models():
 @st.cache_resource
 def load_validation_models():
     """Load models used for image validation."""
+    if not TF_AVAILABLE:
+        logging.error("TensorFlow unavailable: %s", TF_IMPORT_ERROR)
+        return None, None
     base_model = MobileNetV2(weights="imagenet", include_top=True)
     face_cascade = None
     if cv2 is not None:
@@ -1268,6 +1341,19 @@ def display_validation_result_robust(is_valid, summary, reasons, metrics):
 # Detecting Melanoma
 def melanoma_detection():
     st.title('Melanoma Detection')
+    if not TF_AVAILABLE:
+        st.error(
+            "TensorFlow is not available in this environment. "
+            "This app requires Python 3.11 for model inference."
+        )
+        if TF_IMPORT_ERROR:
+            st.caption(f"TensorFlow import error: {TF_IMPORT_ERROR}")
+        st.info(
+            "For deployment, use Python 3.11 (for example via `runtime.txt`) "
+            "or run locally in a Python 3.11 virtual environment."
+        )
+        return
+
     validation_models = load_validation_models()
     ocr_ready, ocr_msg = get_ocr_status()
     st.sidebar.markdown("### OCR Status")
@@ -1368,7 +1454,7 @@ def melanoma_detection():
 
             # Decode using resilient multi-decoder path.
             img_3d = decode_uploaded_image(uploaded_bytes, input_size)
-            st.image(img_3d.astype(np.uint8), caption='Uploaded Image.', use_container_width=True)
+            st.image(img_3d.astype(np.uint8), caption='Uploaded Image.', width="stretch")
             img = np.expand_dims(img_3d, axis=0)
 
         except (OSError, ValueError) as e:
@@ -1578,7 +1664,7 @@ def main():
     melanoma_image_url = "https://www.aimatmelanoma.org/wp-content/uploads/Blue-Greyscale-Volleyball-Quote-UAAPNCAA-Facebook-Cover.jpg"
 
     # Display the image
-    st.image(melanoma_image_url, use_container_width=True)  # Changed to use_container_width
+    st.image(melanoma_image_url, width="stretch")
 
 def display_model_summaries(models):
     for category, category_models in models.items():
@@ -2082,7 +2168,7 @@ def run_app():
     if logo_path.is_file():
         logo_image = Image.open(logo_path)
         logo_image = crop_to_circle(logo_image)
-        st.sidebar.image(logo_image, use_container_width=True)
+        st.sidebar.image(logo_image, width="stretch")
     else:
         st.sidebar.markdown("### Melanoma Detection")
 
