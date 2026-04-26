@@ -42,6 +42,25 @@ The application is deployed and accessible at: [Melanoma Detection App · Stream
    streamlit run Melanoma_Detection.py
    ```
 
+## Deploy Without Git LFS (Free Hosting)
+If your host cannot pull Git LFS files (for example: LFS budget exceeded), configure model download URLs via environment variables.
+
+- **Option A (recommended):** set one base URL that contains all model files with the exact same filenames:
+  - `MODEL_ASSET_BASE_URL=https://<your-public-storage>/models`
+- **Option B:** set file-specific URLs:
+  - `MODEL_URL_DM_CNN`
+  - `MODEL_URL_DM_VGG16`
+  - `MODEL_URL_DM_RESNET50`
+  - `MODEL_URL_DM_EFFICIENTNETB4`
+  - `MODEL_URL_DM_INCEPTIONRESNETV2`
+  - `MODEL_URL_SKIN_CNN`
+  - `MODEL_URL_SKIN_VGG16`
+  - `MODEL_URL_SKIN_RESNET50`
+  - `MODEL_URL_SKIN_EFFICIENTNETB4`
+  - `MODEL_URL_SKIN_INCEPTIONRESNETV2`
+
+On startup, the app now auto-downloads any missing model files. This avoids Git LFS dependency during deploy.
+
 ## Usage
 Navigate through the app using the sidebar menu:
 1. **Introduction**: Learn about the app and melanoma.

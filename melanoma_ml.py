@@ -51,6 +51,9 @@ import sqlite3
 import hashlib
 import re
 import secrets
+from urllib.error import URLError, HTTPError
+from urllib.parse import quote
+from urllib.request import urlopen
 
 MODEL_DIR = Path(__file__).resolve().parent
 AUTH_DB_PATH = MODEL_DIR / "users.db"
@@ -75,6 +78,18 @@ SKIN_WEIGHT_FILENAMES = {
     "InceptionResNetV2": "best_InceptionResNetV2_weights.weights.h5",
 }
 ALL_REQUIRED_MODEL_FILES = tuple(DERM_MODEL_FILENAMES.values()) + tuple(SKIN_WEIGHT_FILENAMES.values())
+MODEL_URL_ENV_MAP = {
+    "DM_melanoma_cnn_with_saliency.keras": "MODEL_URL_DM_CNN",
+    "DM_vgg16_model_with_saliency.keras": "MODEL_URL_DM_VGG16",
+    "DM_best_ResNet50_model.keras": "MODEL_URL_DM_RESNET50",
+    "DM_efficientnetb4_model_with_saliency.keras": "MODEL_URL_DM_EFFICIENTNETB4",
+    "DM_InceptionResNetV2_model.keras": "MODEL_URL_DM_INCEPTIONRESNETV2",
+    "CNN_skin_classifier_weights.weights.h5": "MODEL_URL_SKIN_CNN",
+    "best_VGG16_weights.weights.h5": "MODEL_URL_SKIN_VGG16",
+    "best_ResNet50_weights.weights.h5": "MODEL_URL_SKIN_RESNET50",
+    "best_EfficientNetB4_weights.weights.h5": "MODEL_URL_SKIN_EFFICIENTNETB4",
+    "best_InceptionResNetV2_weights.weights.h5": "MODEL_URL_SKIN_INCEPTIONRESNETV2",
+}
 
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 logging.getLogger('tensorflow').setLevel(logging.ERROR)
@@ -533,6 +548,73 @@ def _model_path(filename: str) -> Path:
     return MODEL_DIR / filename
 
 
+def _is_lfs_pointer_file(path: Path) -> bool:
+    if not path.is_file():
+        return False
+    try:
+        if path.stat().st_size > 1024:
+            return False
+        with path.open("r", encoding="utf-8", errors="ignore") as handle:
+            first_line = handle.readline().strip()
+        return first_line.startswith("version https://git-lfs.github.com/spec/v1")
+    except Exception:
+        return False
+
+
+def _is_valid_model_artifact(path: Path) -> bool:
+    return path.is_file() and not _is_lfs_pointer_file(path)
+
+
+def _resolve_model_download_url(filename: str) -> str | None:
+    direct_key = MODEL_URL_ENV_MAP.get(filename)
+    if direct_key:
+        direct_value = os.environ.get(direct_key, "").strip()
+        if direct_value:
+            return direct_value
+    base_url = os.environ.get("MODEL_ASSET_BASE_URL", "").strip().rstrip("/")
+    if not base_url:
+        return None
+    return f"{base_url}/{quote(filename)}"
+
+
+def _download_model_file(url: str, destination: Path) -> tuple[bool, str]:
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        if "drive.google.com" in url:
+            gdown.download(url, str(destination), quiet=True, fuzzy=True)
+        else:
+            with urlopen(url, timeout=120) as response, destination.open("wb") as out_file:
+                out_file.write(response.read())
+    except (HTTPError, URLError, TimeoutError, OSError) as exc:
+        return False, f"{type(exc).__name__}: {exc}"
+    except Exception as exc:
+        return False, f"{type(exc).__name__}: {exc}"
+
+    if not _is_valid_model_artifact(destination):
+        return False, "downloaded file is missing or still a Git LFS pointer"
+    return True, ""
+
+
+def ensure_model_artifacts() -> tuple[list[str], dict[str, str]]:
+    missing_or_invalid: list[str] = []
+    download_errors: dict[str, str] = {}
+    for filename in ALL_REQUIRED_MODEL_FILES:
+        path = _model_path(filename)
+        if _is_valid_model_artifact(path):
+            continue
+
+        url = _resolve_model_download_url(filename)
+        if not url:
+            missing_or_invalid.append(filename)
+            continue
+
+        success, error = _download_model_file(url, path)
+        if not success:
+            missing_or_invalid.append(filename)
+            download_errors[filename] = error
+    return missing_or_invalid, download_errors
+
+
 @st.cache_resource(show_spinner="Loading melanoma detection models...")
 def load_models():
     # Add this to prevent TensorFlow from allocating all memory
@@ -557,7 +639,7 @@ def load_models():
 
     for label, fname in DERM_MODEL_FILENAMES.items():
         path = _model_path(fname)
-        if not path.is_file():
+        if not _is_valid_model_artifact(path):
             logging.warning("Missing dermoscopy model file: %s", path)
             continue
         try:
@@ -584,7 +666,7 @@ def load_models():
     ]
     for label, builder, shape_args, fname in skin_weights:
         path = _model_path(fname)
-        if not path.is_file():
+        if not _is_valid_model_artifact(path):
             logging.warning("Missing skin weights file: %s", path)
             continue
         try:
@@ -1195,17 +1277,27 @@ def melanoma_detection():
         st.sidebar.warning("OCR Inactive")
     st.sidebar.caption(ocr_msg)
 
+    missing, download_errors = ensure_model_artifacts()
     loaded_models, model_skin_cnn, model_skin_vgg16, model_skin_resnet50, model_skin_efficientnet, model_skin_inceptionresnetv2 = load_models()
 
-    missing = [f for f in ALL_REQUIRED_MODEL_FILES if not _model_path(f).is_file()]
+    missing = [f for f in ALL_REQUIRED_MODEL_FILES if not _is_valid_model_artifact(_model_path(f))]
     if missing:
         st.warning(
-            "Trained model files are missing. Copy the `.keras` and `.weights.h5` files into: **"
+            "Some model files are missing or invalid. The app tried automatic download first."
+            " Upload files manually to **"
             + str(MODEL_DIR)
-            + "** then refresh this page."
+            + "**, or set `MODEL_ASSET_BASE_URL` / file-specific `MODEL_URL_*` environment variables."
         )
         with st.expander("Missing files (expected names)"):
             st.code("\n".join(missing))
+        if download_errors:
+            with st.expander("Download errors"):
+                st.code(
+                    "\n".join(
+                        f"{name}: {err}"
+                        for name, err in download_errors.items()
+                    )
+                )
 
     tab1, tab2 = st.tabs(["Skin Image Models", "Dermoscopy Image Models"])
     with tab1:
