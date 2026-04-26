@@ -631,7 +631,12 @@ def _download_model_file(url: str, destination: Path) -> tuple[bool, str]:
     destination.parent.mkdir(parents=True, exist_ok=True)
     try:
         if "drive.google.com" in url:
-            gdown.download(url, str(destination), quiet=True, fuzzy=True)
+            try:
+                # Newer gdown supports fuzzy links from shared Drive URLs.
+                gdown.download(url, str(destination), quiet=True, fuzzy=True)
+            except TypeError:
+                # Older gdown versions do not accept `fuzzy`; fallback keeps compatibility.
+                gdown.download(url, str(destination), quiet=True)
         else:
             with urlopen(url, timeout=120) as response, destination.open("wb") as out_file:
                 out_file.write(response.read())
