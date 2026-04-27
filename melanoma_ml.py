@@ -1683,27 +1683,24 @@ def melanoma_detection():
                 if is_skin:
                     both_yes = pain_choice == "Yes" and itching_choice == "Yes"
                     both_no = pain_choice == "No" and itching_choice == "No"
-                    mixed_symptoms = (pain_choice == "Yes") != (itching_choice == "Yes")
-
-                    # Enforce requested rule matrix for skin flow.
-                    if has_dark_mark and both_yes:
-                        status_type = "cancer"
-                        status_message = "⚠️ SKIN CANCER DETECTED"
-                        confidence = max(confidence, float(mark_details.get("mark_score", 0.0)))
-                        uncertainty_note = "Rule: mark present + pain Yes + itching Yes."
-                    elif has_dark_mark and mixed_symptoms:
+                    # Strict ordered rule set requested by user.
+                    if has_dark_mark and pain_choice == "Yes" and itching_choice == "No":
                         status_type = "warning"
-                        status_message = "⚠️ MIXED SYMPTOMS: Mark present, monitor closely and consult a dermatologist."
-                        uncertainty_note = "Rule: mark present with mixed symptoms (one Yes, one No)."
+                        status_message = "⚠️ MIXED SYMPTOMUS"
+                        uncertainty_note = "Rule 1: mark detected + pain Yes + itching No."
+                    elif has_dark_mark and both_yes:
+                        status_type = "cancer"
+                        status_message = "⚠️ CANCER DETECTED"
+                        confidence = max(confidence, float(mark_details.get("mark_score", 0.0)))
+                        uncertainty_note = "Rule 2: mark detected + pain Yes + itching Yes."
                     elif has_dark_mark and both_no:
                         status_type = "warning"
-                        status_message = "⚠️ MARK PRESENT: It seems cancer may be present. Please consult a dermatologist."
-                        uncertainty_note = "Rule: mark present + both symptoms No."
-                    else:
+                        status_message = "⚠️ SEEM TO BE CANCER PRESENT"
+                        uncertainty_note = "Rule 3: mark detected + pain No + itching No."
+                    elif (not has_dark_mark) and both_yes:
                         status_type = "healthy"
-                        status_message = "✅ NO SKIN CANCER DETECTED"
-                        if both_yes:
-                            uncertainty_note = "Both symptoms are Yes, but no strong mark detected in the image."
+                        status_message = "✅ NON-CANCER"
+                        uncertainty_note = "Rule 4: no mark detected + pain Yes + itching Yes."
 
                 display_result_message(status_message, status_type)
 
