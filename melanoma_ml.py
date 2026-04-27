@@ -55,6 +55,10 @@ try:
         preprocess_input as preprocess_mobilenet_v2,
         decode_predictions,
     )
+    try:
+        import keras as standalone_keras
+    except Exception:
+        standalone_keras = None
     TF_AVAILABLE = True
 except Exception as exc:
     TF_IMPORT_ERROR = f"{type(exc).__name__}: {exc}"
@@ -77,6 +81,7 @@ except Exception as exc:
     MobileNetV2 = _tensorflow_unavailable
     preprocess_vgg16 = preprocess_resnet50 = preprocess_efficientnet = preprocess_inceptionresnetv2 = _tensorflow_unavailable
     preprocess_mobilenet_v2 = decode_predictions = _tensorflow_unavailable
+    standalone_keras = None
 
 MODEL_DIR = Path(__file__).resolve().parent
 AUTH_DB_PATH = MODEL_DIR / "users.db"
@@ -670,8 +675,41 @@ def ensure_model_artifacts() -> tuple[list[str], dict[str, str]]:
     return missing_or_invalid, download_errors
 
 
+def _load_saved_keras_model(path: Path):
+    """
+    Load a .keras model with cross-runtime compatibility fallback.
+
+    Some artifacts are serialized by standalone Keras and fail when loaded via
+    tf.keras directly (and vice versa), so we try both loaders.
+    """
+    errors = []
+
+    try:
+        return load_model(path, compile=False)
+    except Exception as exc:
+        errors.append(f"tf.keras: {type(exc).__name__}: {exc}")
+
+    if standalone_keras is not None:
+        try:
+            # Keras 3 supports safe_mode; older versions ignore/raise on it.
+            return standalone_keras.models.load_model(path, compile=False, safe_mode=False)
+        except TypeError:
+            try:
+                return standalone_keras.models.load_model(path, compile=False)
+            except Exception as exc:
+                errors.append(f"keras: {type(exc).__name__}: {exc}")
+        except Exception as exc:
+            errors.append(f"keras: {type(exc).__name__}: {exc}")
+
+    raise RuntimeError(" | ".join(errors))
+
+
 @st.cache_resource(show_spinner="Loading melanoma detection models...")
 def load_models():
+    diagnostics = {
+        "derm_incompatible": {},
+        "derm_load_errors": {},
+    }
     if not TF_AVAILABLE:
         logging.error("TensorFlow unavailable: %s", TF_IMPORT_ERROR)
         empty = {
@@ -690,7 +728,7 @@ def load_models():
                 'InceptionResNetV2': None,
             },
         }
-        return empty, None, None, None, None, None
+        return empty, None, None, None, None, None, diagnostics
 
     # Add this to prevent TensorFlow from allocating all memory
     gpus = tf.config.list_physical_devices('GPU')
@@ -718,7 +756,7 @@ def load_models():
             logging.warning("Missing dermoscopy model file: %s", path)
             continue
         try:
-            m = load_model(path)
+            m = _load_saved_keras_model(path)
             if label == 'CNN':
                 model_derm_cnn = m
             elif label == 'VGG16':
@@ -731,6 +769,15 @@ def load_models():
                 model_derm_inceptionresnetv2 = m
         except Exception as e:
             logging.error("Error loading dermoscopy model %s: %s", fname, e)
+            err_text = str(e)
+            diagnostics["derm_load_errors"][label] = err_text
+            if (
+                "Could not deserialize class 'Functional'" in err_text
+                or "keras.src.models.functional" in err_text
+            ):
+                diagnostics["derm_incompatible"][label] = (
+                    "Incompatible .keras format for current TensorFlow/Keras runtime."
+                )
 
     skin_weights = [
         ('CNN', build_model, (), SKIN_WEIGHT_FILENAMES['CNN']),
@@ -775,7 +822,7 @@ def load_models():
             'EfficientNetB4': model_skin_efficientnet,
             'InceptionResNetV2': model_skin_inceptionresnetv2
         }
-    }, model_skin_cnn, model_skin_vgg16, model_skin_resnet50, model_skin_efficientnet, model_skin_inceptionresnetv2
+    }, model_skin_cnn, model_skin_vgg16, model_skin_resnet50, model_skin_efficientnet, model_skin_inceptionresnetv2, diagnostics
 
 
 @st.cache_resource
@@ -1384,7 +1431,14 @@ def melanoma_detection():
     st.sidebar.caption(ocr_msg)
 
     missing, download_errors = ensure_model_artifacts()
-    loaded_models, model_skin_cnn, model_skin_vgg16, model_skin_resnet50, model_skin_efficientnet, model_skin_inceptionresnetv2 = load_models()
+    loaded_data = load_models()
+    loaded_models = loaded_data[0]
+    model_skin_cnn = loaded_data[1]
+    model_skin_vgg16 = loaded_data[2]
+    model_skin_resnet50 = loaded_data[3]
+    model_skin_efficientnet = loaded_data[4]
+    model_skin_inceptionresnetv2 = loaded_data[5]
+    model_load_diagnostics = loaded_data[6] if len(loaded_data) > 6 else {}
 
     missing = [f for f in ALL_REQUIRED_MODEL_FILES if not _is_valid_model_artifact(_model_path(f))]
     if missing:
@@ -1440,6 +1494,20 @@ def melanoma_detection():
 
     available_models = [name for name in models if model_dict.get(name) is not None]
     if not available_models:
+        if (not is_skin) and model_load_diagnostics.get("derm_incompatible"):
+            st.error("Dermoscopy models are incompatible with the current runtime.")
+            st.caption(
+                "These models were saved with a different Keras format. "
+                "Please re-save dermoscopy models using TensorFlow/Keras 2.15-compatible format, "
+                "or deploy with a matching Keras runtime."
+            )
+            with st.expander("Incompatible dermoscopy models"):
+                st.code(
+                    "\n".join(
+                        f"{name}: {reason}"
+                        for name, reason in model_load_diagnostics["derm_incompatible"].items()
+                    )
+                )
         st.error(
             "No models are currently loaded for this mode. "
             "Please add/download the required model files and reload the app."
@@ -1460,24 +1528,6 @@ def melanoma_detection():
 
     selected_model = st.selectbox('Select Model', available_models)
     effective_model = selected_model
-
-    # Several skin-model checkpoints can be poorly calibrated in real-world photos.
-    # Use a stable default backend for skin inference to avoid "always cancer"/"always normal" behavior.
-    if is_skin:
-        preferred_skin_backend = "ResNet50"
-        fallback_order = ["VGG16", "CNN", "EfficientNetB4", "InceptionResNetV2"]
-        if model_dict.get(preferred_skin_backend) is not None:
-            effective_model = preferred_skin_backend
-        else:
-            for candidate in fallback_order:
-                if model_dict.get(candidate) is not None:
-                    effective_model = candidate
-                    break
-        if effective_model != selected_model:
-            st.info(
-                f"Using stable skin inference backend: {effective_model} "
-                f"(selected: {selected_model}) to improve prediction reliability."
-            )
     pain_choice = "No"
     itching_choice = "No"
     if is_skin:
@@ -1517,6 +1567,8 @@ def melanoma_detection():
             img = np.expand_dims(img_3d, axis=0)
             # Keep an untouched copy for rule-based visual checks (mark detection, etc.).
             img_rule = np.expand_dims(img_3d.copy(), axis=0)
+            has_dark_mark, mark_details = detect_dark_mark_presence(img_rule)
+            both_yes = (pain_choice == "Yes") and (itching_choice == "Yes")
 
         except (OSError, ValueError) as e:
             st.error(
@@ -1536,7 +1588,7 @@ def melanoma_detection():
             # If the uploaded photo looks like plain skin without lesion features,
             # return a clear non-cancer outcome before model inference.
             plain_skin, plain_details = detect_plain_skin_no_lesion(img)
-            if plain_skin:
+            if plain_skin and (not has_dark_mark) and (not both_yes):
                 display_result_message("✅ HEALTHY SKIN: No cancer detected", status_type="healthy")
                 st.write("Prediction: NORMAL")
                 st.write(f"Confidence: {plain_details.get('plain_confidence', 0.0):.2f}")
@@ -1549,7 +1601,7 @@ def melanoma_detection():
             # Additional guardrail: if no prominent lesion-like blob is present,
             # do not run cancer classification on broad skin/body-part photos.
             lesion_candidate, lesion_details = has_prominent_lesion_candidate(img)
-            if not lesion_candidate:
+            if (not lesion_candidate) and (not has_dark_mark) and (not both_yes):
                 display_result_message("✅ HEALTHY SKIN: No cancer detected", status_type="healthy")
                 st.write("Prediction: NORMAL")
                 st.write("Confidence: 0.90")
@@ -1602,7 +1654,6 @@ def melanoma_detection():
                     return
 
                 if is_skin:
-                    has_dark_mark, mark_details = detect_dark_mark_presence(img_rule)
                     best_area_ratio = float(lesion_details.get("best_area_ratio", 0.0)) if lesion_details else 0.0
                     candidate_count = int(lesion_details.get("candidate_count", 0)) if lesion_details else 0
 
