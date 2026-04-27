@@ -1043,9 +1043,18 @@ def detect_dark_mark_presence(img_array):
         hsv = cv2.cvtColor(img, cv2.COLOR_RGB2HSV)
 
         # Dark regions and deep-brown hue ranges.
-        dark_mask = cv2.inRange(hsv, (0, 25, 0), (179, 255, 95))
-        brown_mask = cv2.inRange(hsv, (5, 35, 20), (28, 255, 170))
+        dark_mask = cv2.inRange(hsv, (0, 20, 0), (179, 255, 115))
+        brown_mask = cv2.inRange(hsv, (3, 20, 15), (30, 255, 190))
+
+        # Relative-darkness fallback (robust for varied skin tones/lighting):
+        # detect pixels significantly darker than local skin background.
+        gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
+        p35 = np.percentile(gray, 35)
+        rel_dark_threshold = max(18, int(p35 - 12))
+        relative_dark_mask = cv2.inRange(gray, 0, rel_dark_threshold)
+
         mark_mask = cv2.bitwise_or(dark_mask, brown_mask)
+        mark_mask = cv2.bitwise_or(mark_mask, relative_dark_mask)
 
         kernel = np.ones((3, 3), np.uint8)
         mark_mask = cv2.morphologyEx(mark_mask, cv2.MORPH_OPEN, kernel, iterations=1)
@@ -1058,8 +1067,11 @@ def detect_dark_mark_presence(img_array):
             largest_area = max(largest_area, float(cv2.contourArea(cnt)))
         largest_ratio = largest_area / image_area
 
-        has_dark_mark = (mark_ratio >= 0.015) and (largest_ratio >= 0.004)
-        mark_score = max(0.0, min(1.0, 0.55 * min(mark_ratio / 0.06, 1.0) + 0.45 * min(largest_ratio / 0.03, 1.0)))
+        has_dark_mark = (mark_ratio >= 0.009) and (largest_ratio >= 0.0025)
+        mark_score = max(
+            0.0,
+            min(1.0, 0.5 * min(mark_ratio / 0.05, 1.0) + 0.5 * min(largest_ratio / 0.02, 1.0)),
+        )
         return has_dark_mark, {
             "mark_ratio": mark_ratio,
             "largest_ratio": largest_ratio,
@@ -1226,6 +1238,21 @@ def is_valid_skin_image_robust(img_array, validation_models=None):
         text_score, face_score, document_pattern_score, content_score, skin_color_score
     ])))
     min_suitability_score = 70
+
+    # Mitigate common false positives on close-up skin textures that can trigger
+    # document/object heuristics despite skin-like color profile.
+    likely_skin_false_positive = (
+        has_skin_colors
+        and not has_face
+        and not significant_text_for_reject
+        and (doc_confidence <= 0.6 or num_lines <= 3)
+        and (classification["is_document"] or is_document)
+    )
+    if likely_skin_false_positive:
+        reasons.append(
+            "Document/object heuristics likely false positive for skin texture; allowing image for lesion analysis."
+        )
+        checks_passed = max(checks_passed, 4)
 
     is_valid = checks_passed >= 4
     if (ocr_ready and significant_text_for_reject) or has_face:
