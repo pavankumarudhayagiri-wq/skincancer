@@ -1289,21 +1289,9 @@ def get_cancer_status(result, image_type='skin', confidence=1.0):
         if result in {'NEV', 'SEK'}:
             return "benign", "ℹ️ BENIGN LESION: Non-cancerous mole detected"
         if result == 'ACK':
-            if confidence > 0.7:
-                return "cancer", "⚠️ CANCER DETECTED"
-            return (
-                "warning",
-                "Low confidence prediction. This may be normal skin. Please consult a dermatologist if you have concerns.",
-            )
+            return "cancer", "⚠️ SKIN CANCER DETECTED"
         if result in high_risk_classes:
-            if confidence > 0.7:
-                return "cancer", "⚠️ CANCER DETECTED"
-            if confidence < 0.6:
-                return (
-                    "warning",
-                    "Low confidence prediction. This may be normal skin. Please consult a dermatologist if you have concerns.",
-                )
-            return "warning", "⚠️ Suspicious lesion detected, but confidence is moderate."
+            return "cancer", "⚠️ SKIN CANCER DETECTED"
         return "healthy", "✅ NO SKIN CANCER DETECTED: Normal Healthy Skin"
     if result == 'Malignant':
         return "cancer", "⚠️ Malignant - Cancer Detected"
@@ -1424,6 +1412,25 @@ def melanoma_detection():
     }
 
     selected_model = st.selectbox('Select Model', models)
+    effective_model = selected_model
+
+    # Several skin-model checkpoints can be poorly calibrated in real-world photos.
+    # Use a stable default backend for skin inference to avoid "always cancer"/"always normal" behavior.
+    if is_skin:
+        preferred_skin_backend = "ResNet50"
+        fallback_order = ["VGG16", "CNN", "EfficientNetB4", "InceptionResNetV2"]
+        if model_dict.get(preferred_skin_backend) is not None:
+            effective_model = preferred_skin_backend
+        else:
+            for candidate in fallback_order:
+                if model_dict.get(candidate) is not None:
+                    effective_model = candidate
+                    break
+        if effective_model != selected_model:
+            st.info(
+                f"Using stable skin inference backend: {effective_model} "
+                f"(selected: {selected_model}) to improve prediction reliability."
+            )
     pain_choice = "No"
     itching_choice = "No"
     if is_skin:
@@ -1450,9 +1457,9 @@ def melanoma_detection():
 
         try:
             # Determine input size based on the selected model
-            if selected_model == 'EfficientNetB4':
+            if effective_model == 'EfficientNetB4':
                 input_size = (380, 380)
-            elif selected_model == 'InceptionResNetV2':
+            elif effective_model == 'InceptionResNetV2':
                 input_size = (299, 299)
             else:
                 input_size = (224, 224)
@@ -1508,8 +1515,8 @@ def melanoma_detection():
                 return
 
             # Preprocess based on model
-            if selected_model in preprocess_dict:
-                img = preprocess_dict[selected_model](img)
+            if effective_model in preprocess_dict:
+                img = preprocess_dict[effective_model](img)
 
             # Assuming saliency map is generated (dummy saliency map for illustration)
             saliency_map = np.zeros_like(img)
@@ -1518,9 +1525,9 @@ def melanoma_detection():
             combined_input = np.concatenate((img, saliency_map), axis=-1)
 
             # Model prediction
-            model = model_dict.get(selected_model)
+            model = model_dict.get(effective_model)
             if model is None:
-                st.error("Selected model is not available.")
+                st.error("No valid model backend is available for prediction.")
             else:
                 prediction = safe_model_predict(model, combined_input)
 
@@ -1545,6 +1552,28 @@ def melanoma_detection():
                     st.caption("Model confidence is too low for a reliable lesion prediction.")
                     return
 
+                if is_skin:
+                    has_dark_mark, mark_details = detect_dark_mark_presence(img)
+                    best_area_ratio = float(lesion_details.get("best_area_ratio", 0.0)) if lesion_details else 0.0
+                    candidate_count = int(lesion_details.get("candidate_count", 0)) if lesion_details else 0
+
+                    # Guardrail for broad hand/body-part photos: if model predicts high-risk
+                    # but there is no strong dark mark and lesion candidate is very small,
+                    # treat as non-diagnostic normal-skin upload instead of cancer.
+                    if result in {"ACK", "BCC", "MEL", "SCC"} and (not has_dark_mark) and best_area_ratio < 0.012:
+                        display_result_message("✅ HEALTHY SKIN: No cancer detected", status_type="healthy")
+                        st.write("Prediction: NORMAL")
+                        st.write(f"Confidence: {confidence:.2f}")
+                        st.caption(
+                            "Image appears to be broad skin/palm texture without a clear lesion focus. "
+                            "Please upload a close-up lesion image for diagnosis."
+                        )
+                        st.caption(
+                            f"Lesion candidates: {candidate_count} | Largest candidate area: {best_area_ratio * 100:.2f}%"
+                        )
+                        st.caption(f"Pain: {pain_choice} | Itching: {itching_choice}")
+                        return
+
                 status_type, status_message = get_cancer_status(
                     result,
                     image_type='skin' if is_skin else 'derm',
@@ -1552,22 +1581,29 @@ def melanoma_detection():
                 )
 
                 if is_skin:
-                    has_dark_mark, mark_details = detect_dark_mark_presence(img)
                     both_yes = pain_choice == "Yes" and itching_choice == "Yes"
+                    both_no = pain_choice == "No" and itching_choice == "No"
                     mixed_symptoms = (pain_choice == "Yes") != (itching_choice == "Yes")
 
-                    # Keep model output as primary decision. Use rule/symptoms as supportive signals only.
+                    # Enforce requested rule matrix for skin flow.
                     if has_dark_mark and both_yes:
-                        if status_type != "cancer":
-                            status_type = "warning"
-                            status_message = "⚠️ Strong risk signals present. Please consult a dermatologist."
+                        status_type = "cancer"
+                        status_message = "⚠️ SKIN CANCER DETECTED"
                         confidence = max(confidence, float(mark_details.get("mark_score", 0.0)))
-                        uncertainty_note = (
-                            "Supportive rule: dark/deep-brown mark detected and both pain + itching are Yes."
-                        )
-                    elif has_dark_mark and mixed_symptoms and status_type == "healthy":
+                        uncertainty_note = "Rule: mark present + pain Yes + itching Yes."
+                    elif has_dark_mark and mixed_symptoms:
                         status_type = "warning"
-                        status_message = "⚠️ Possible risk signal detected. Please monitor and consult a dermatologist."
+                        status_message = "⚠️ MIXED SYMPTOMS: Mark present, monitor closely and consult a dermatologist."
+                        uncertainty_note = "Rule: mark present with mixed symptoms (one Yes, one No)."
+                    elif has_dark_mark and both_no:
+                        status_type = "warning"
+                        status_message = "⚠️ MARK PRESENT: It seems cancer may be present. Please consult a dermatologist."
+                        uncertainty_note = "Rule: mark present + both symptoms No."
+                    else:
+                        status_type = "healthy"
+                        status_message = "✅ NO SKIN CANCER DETECTED"
+                        if both_yes:
+                            uncertainty_note = "Both symptoms are Yes, but no strong mark detected in the image."
 
                 display_result_message(status_message, status_type)
 
