@@ -1554,47 +1554,20 @@ def melanoma_detection():
                 if is_skin:
                     has_dark_mark, mark_details = detect_dark_mark_presence(img)
                     both_yes = pain_choice == "Yes" and itching_choice == "Yes"
-                    both_no = pain_choice == "No" and itching_choice == "No"
                     mixed_symptoms = (pain_choice == "Yes") != (itching_choice == "Yes")
-                    rules_satisfied = has_dark_mark and both_yes
+
+                    # Keep model output as primary decision. Use rule/symptoms as supportive signals only.
                     if has_dark_mark and both_yes:
-                        status_type = "cancer"
-                        status_message = "⚠️ CANCER DETECTED"
-                        result = "RULE_BASED_POSITIVE"
+                        if status_type != "cancer":
+                            status_type = "warning"
+                            status_message = "⚠️ Strong risk signals present. Please consult a dermatologist."
                         confidence = max(confidence, float(mark_details.get("mark_score", 0.0)))
                         uncertainty_note = (
-                            "Rule satisfied: dark/deep-brown mark detected and both pain + itching are Yes."
+                            "Supportive rule: dark/deep-brown mark detected and both pain + itching are Yes."
                         )
-                    else:
-                        # Enforce user-requested rule: only declare cancer when both
-                        # mark signal and both symptoms are present.
-                        if status_type == "cancer":
-                            status_type = "warning"
-                            status_message = (
-                                "Rule not fully satisfied. Cancer is not declared unless dark/deep-brown mark "
-                                "and both pain + itching are present."
-                            )
-                        if not has_dark_mark and result != "NORMAL":
-                            result = "NORMAL"
-                            confidence = max(0.75, confidence * 0.8)
-                            uncertainty_note = "No strong dark/deep-brown mark detected. Appears closer to normal skin."
-
-                    # Final decision based on requested symptom/mark rules.
-                    if rules_satisfied:
-                        status_type = "cancer"
-                        status_message = "⚠️ CANCER DETECTED (Rule Satisfied)"
-                    elif has_dark_mark and mixed_symptoms:
+                    elif has_dark_mark and mixed_symptoms and status_type == "healthy":
                         status_type = "warning"
-                        status_message = "⚠️ IT SEEMS TO BE CANCER (Mark Present + Mixed Symptoms)"
-                    elif has_dark_mark and both_no:
-                        status_type = "warning"
-                        status_message = (
-                            "⚠️ IT SEEMS TO BE CANCER (Mark Present). "
-                            "Please consult a dermatologist for correct actions."
-                        )
-                    else:
-                        status_type = "healthy"
-                        status_message = "✅ NO CANCER DETECTED (Rule Not Satisfied)"
+                        status_message = "⚠️ Possible risk signal detected. Please monitor and consult a dermatologist."
 
                 display_result_message(status_message, status_type)
 
