@@ -1258,13 +1258,22 @@ def is_valid_skin_image_robust(img_array, validation_models=None):
 
 def interpret_skin_prediction(probabilities):
     """
-    Interpret skin-model probabilities using top predicted class.
+    Interpret skin-model probabilities with a NORMAL fallback.
     Returns: (result_label, confidence, note)
     """
     probs = np.asarray(probabilities).astype(np.float32).flatten()
     top_idx = int(np.argmax(probs))
-    top1 = float(np.max(probs)) if probs.size else 0.0
+    sorted_probs = np.sort(probs)[::-1]
+    top1 = float(sorted_probs[0]) if sorted_probs.size else 0.0
+    top2 = float(sorted_probs[1]) if sorted_probs.size > 1 else 0.0
+    spread = top1 - top2
     raw_label = skin_labels[top_idx]
+
+    # Normal-skin fallback when model is uncertain on lesion classes.
+    if top1 < 0.5:
+        return "NORMAL", top1, "No lesion detected - appears to be normal skin"
+    if 0.5 <= top1 < 0.7 and spread < 0.2:
+        return "NORMAL", top1, "Unclear - may be normal skin or benign lesion"
     return raw_label, top1, ""
 
 
@@ -1275,11 +1284,27 @@ def get_cancer_status(result, image_type='skin', confidence=1.0):
     """
     if image_type == 'skin':
         high_risk_classes = {'MEL', 'BCC', 'SCC'}
-        if result in high_risk_classes or result == 'ACK':
-            return "cancer", "⚠️ SKIN CANCER DETECTED"
+        if result == 'NORMAL':
+            return "healthy", "✅ NO SKIN CANCER DETECTED: Normal Healthy Skin"
         if result in {'NEV', 'SEK'}:
-            return "benign", "ℹ️ NO SKIN CANCER DETECTED (Benign Lesion)"
-        return "healthy", "✅ NO SKIN CANCER DETECTED"
+            return "benign", "ℹ️ BENIGN LESION: Non-cancerous mole detected"
+        if result == 'ACK':
+            if confidence > 0.7:
+                return "cancer", "⚠️ CANCER DETECTED"
+            return (
+                "warning",
+                "Low confidence prediction. This may be normal skin. Please consult a dermatologist if you have concerns.",
+            )
+        if result in high_risk_classes:
+            if confidence > 0.7:
+                return "cancer", "⚠️ CANCER DETECTED"
+            if confidence < 0.6:
+                return (
+                    "warning",
+                    "Low confidence prediction. This may be normal skin. Please consult a dermatologist if you have concerns.",
+                )
+            return "warning", "⚠️ Suspicious lesion detected, but confidence is moderate."
+        return "healthy", "✅ NO SKIN CANCER DETECTED: Normal Healthy Skin"
     if result == 'Malignant':
         return "cancer", "⚠️ Malignant - Cancer Detected"
     return "benign", "ℹ️ Benign - No Cancer Detected"
