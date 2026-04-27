@@ -1584,6 +1584,50 @@ def melanoma_detection():
             is_valid, summary, reasons, metrics = is_valid_skin_image_robust(img, validation_models)
             if not display_validation_result_robust(is_valid, summary, reasons, metrics):
                 return
+
+            # Apply strict symptom/mark rules first for skin mode so guardrails
+            # cannot override requested deterministic outcomes.
+            if is_skin:
+                both_yes = pain_choice == "Yes" and itching_choice == "Yes"
+                both_no = pain_choice == "No" and itching_choice == "No"
+                strict_status = None
+
+                if has_dark_mark and pain_choice == "Yes" and itching_choice == "No":
+                    strict_status = (
+                        "warning",
+                        "⚠️ MIXED SYMPTOMUS",
+                        "Rule 1: mark detected + pain Yes + itching No.",
+                    )
+                elif has_dark_mark and both_yes:
+                    strict_status = (
+                        "cancer",
+                        "⚠️ CANCER DETECTED",
+                        "Rule 2: mark detected + pain Yes + itching Yes.",
+                    )
+                elif has_dark_mark and both_no:
+                    strict_status = (
+                        "warning",
+                        "⚠️ SEEM TO BE CANCER PRESENT",
+                        "Rule 3: mark detected + pain No + itching No.",
+                    )
+                elif (not has_dark_mark) and both_yes:
+                    strict_status = (
+                        "healthy",
+                        "✅ NON-CANCER",
+                        "Rule 4: no mark detected + pain Yes + itching Yes.",
+                    )
+
+                if strict_status is not None:
+                    status_type, status_message, strict_note = strict_status
+                    display_result_message(status_message, status_type)
+                    st.write(f"Prediction: {status_message.replace('⚠️ ', '').replace('✅ ', '')}")
+                    if has_dark_mark:
+                        st.write(f"Confidence: {float(mark_details.get('mark_score', 0.0)):.2f}")
+                    else:
+                        st.write("Confidence: 1.00")
+                    st.caption(strict_note)
+                    st.caption(f"Pain: {pain_choice} | Itching: {itching_choice}")
+                    return
             
             # If the uploaded photo looks like plain skin without lesion features,
             # return a clear non-cancer outcome before model inference.
@@ -1679,28 +1723,6 @@ def melanoma_detection():
                     image_type='skin' if is_skin else 'derm',
                     confidence=confidence,
                 )
-
-                if is_skin:
-                    both_yes = pain_choice == "Yes" and itching_choice == "Yes"
-                    both_no = pain_choice == "No" and itching_choice == "No"
-                    # Strict ordered rule set requested by user.
-                    if has_dark_mark and pain_choice == "Yes" and itching_choice == "No":
-                        status_type = "warning"
-                        status_message = "⚠️ MIXED SYMPTOMUS"
-                        uncertainty_note = "Rule 1: mark detected + pain Yes + itching No."
-                    elif has_dark_mark and both_yes:
-                        status_type = "cancer"
-                        status_message = "⚠️ CANCER DETECTED"
-                        confidence = max(confidence, float(mark_details.get("mark_score", 0.0)))
-                        uncertainty_note = "Rule 2: mark detected + pain Yes + itching Yes."
-                    elif has_dark_mark and both_no:
-                        status_type = "warning"
-                        status_message = "⚠️ SEEM TO BE CANCER PRESENT"
-                        uncertainty_note = "Rule 3: mark detected + pain No + itching No."
-                    elif (not has_dark_mark) and both_yes:
-                        status_type = "healthy"
-                        status_message = "✅ NON-CANCER"
-                        uncertainty_note = "Rule 4: no mark detected + pain Yes + itching Yes."
 
                 display_result_message(status_message, status_type)
 
