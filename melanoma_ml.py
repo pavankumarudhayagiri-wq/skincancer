@@ -730,7 +730,7 @@ def load_models():
             elif label == 'InceptionResNetV2':
                 model_derm_inceptionresnetv2 = m
         except Exception as e:
-            logging.exception("Error loading dermoscopy model %s: %s", fname, e)
+            logging.error("Error loading dermoscopy model %s: %s", fname, e)
 
     skin_weights = [
         ('CNN', build_model, (), SKIN_WEIGHT_FILENAMES['CNN']),
@@ -758,7 +758,7 @@ def load_models():
             elif label == 'InceptionResNetV2':
                 model_skin_inceptionresnetv2 = m
         except Exception as e:
-            logging.exception("Error loading skin model %s: %s", fname, e)
+            logging.error("Error loading skin model %s: %s", fname, e)
 
     return {
         'derm': {
@@ -1411,7 +1411,27 @@ def melanoma_detection():
         'InceptionResNetV2': preprocess_inceptionresnetv2
     }
 
-    selected_model = st.selectbox('Select Model', models)
+    available_models = [name for name in models if model_dict.get(name) is not None]
+    if not available_models:
+        st.error(
+            "No models are currently loaded for this mode. "
+            "Please add/download the required model files and reload the app."
+        )
+        with st.expander("Expected model files"):
+            expected_files = (
+                SKIN_WEIGHT_FILENAMES.values() if is_skin else DERM_MODEL_FILENAMES.values()
+            )
+            st.code("\n".join(expected_files))
+        return
+
+    if len(available_models) < len(models):
+        unavailable = [name for name in models if name not in available_models]
+        st.warning(
+            "Some models are unavailable and hidden from selection: "
+            + ", ".join(unavailable)
+        )
+
+    selected_model = st.selectbox('Select Model', available_models)
     effective_model = selected_model
 
     # Several skin-model checkpoints can be poorly calibrated in real-world photos.
@@ -1468,6 +1488,8 @@ def melanoma_detection():
             img_3d = decode_uploaded_image(uploaded_bytes, input_size)
             st.image(img_3d.astype(np.uint8), caption='Uploaded Image.', width="stretch")
             img = np.expand_dims(img_3d, axis=0)
+            # Keep an untouched copy for rule-based visual checks (mark detection, etc.).
+            img_rule = np.expand_dims(img_3d.copy(), axis=0)
 
         except (OSError, ValueError) as e:
             st.error(
@@ -1553,7 +1575,7 @@ def melanoma_detection():
                     return
 
                 if is_skin:
-                    has_dark_mark, mark_details = detect_dark_mark_presence(img)
+                    has_dark_mark, mark_details = detect_dark_mark_presence(img_rule)
                     best_area_ratio = float(lesion_details.get("best_area_ratio", 0.0)) if lesion_details else 0.0
                     candidate_count = int(lesion_details.get("candidate_count", 0)) if lesion_details else 0
 

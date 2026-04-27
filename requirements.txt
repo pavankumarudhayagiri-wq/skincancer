@@ -9,6 +9,7 @@ pillow
 scikit-learn
 gdown
 tensorflow==2.15.1; python_version < "3.12"
+keras==2.15.0; python_version < "3.12"
 opencv-python>=4.8.0
 pytesseract>=0.3.10
 scipy>=1.9.0
